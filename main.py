@@ -3,6 +3,7 @@ import logging
 
 from src.bot import create_bot, create_dispatcher
 from src.config import settings
+from src.database.redis_client import redis_client
 from src.handlers import setup_handlers
 
 # Configure logging
@@ -17,9 +18,27 @@ dp = create_dispatcher()
 dp.include_router(setup_handlers())
 
 
+async def on_startup():
+    """Initialize services on startup."""
+    await redis_client.connect()
+
+
+async def on_shutdown():
+    """Cleanup on shutdown."""
+    await redis_client.disconnect()
+
+
 async def main():
-    logger.info("Starting bot...")
-    await dp.start_polling(bot)
+    """Main function to start the bot."""
+    try:
+        logger.info("Starting Task Manager Bot...")
+        await on_startup()
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+    finally:
+        await on_shutdown()
+        await bot.session.close()
 
 
 if __name__ == "__main__":

@@ -5,3 +5,9 @@ services:
     build: .
     env_file: .env
     restart: unless-stopped
+    networks:
+      - task_manager_network
+
+networks:
+  task_manager_network:
+    external: true
