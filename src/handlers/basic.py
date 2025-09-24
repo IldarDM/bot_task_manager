@@ -3,6 +3,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from src.database.redis_client import redis_client
+from src.database.statements import UserState, FSMState
 
 router = Router()
 
@@ -10,7 +11,7 @@ router = Router()
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
-    await redis_client.set_user_state(user_id, "started")
+    await redis_client.set_user_state(user_id, UserState.STARTED)
 
     await message.answer(f"""
 Салют, {message.from_user.full_name}!
