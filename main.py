@@ -4,7 +4,7 @@ import logging
 from src.bot import create_bot, create_dispatcher
 from src.config import settings
 from src.database.redis_client import redis_client
-from src.handlers import setup_handlers
+from src.routes import setup_handlers
 
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.log_level))
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 bot = create_bot(settings.bot_token)
 dp = create_dispatcher()
 
-# Setup handlers
+# Setup routes
 dp.include_router(setup_handlers())
 
 
