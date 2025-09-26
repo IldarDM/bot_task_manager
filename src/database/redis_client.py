@@ -4,7 +4,7 @@ from typing import Optional
 import redis.asyncio as redis
 
 from ..config import settings
-from .statements import UserState, FSMState
+from .states import UserState, FSMState
 
 logger = logging.getLogger(__name__)
 

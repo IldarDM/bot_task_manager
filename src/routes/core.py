@@ -3,7 +3,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from src.database.redis_client import redis_client
-from src.database.statements import UserState, FSMState
+from src.database.states import UserState, FSMState
 
 router = Router()
 

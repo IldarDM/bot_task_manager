@@ -5,7 +5,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 
 from src.database.redis_client import redis_client, UserState
-from src.database.statements import FSMState
+from src.database.states import FSMState
 from ..config import settings
 
 router = Router()

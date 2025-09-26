@@ -6,7 +6,7 @@ from aiogram.filters import Command
 
 from src.keyboards.task import task_actions
 from src.database.redis_client import redis_client
-from src.database.statements import FSMState, UserState
+from src.database.states import FSMState, UserState
 from ..config import settings
 
 router = Router()
@@ -58,6 +58,14 @@ async def list_tasks(message: Message):
             await message.answer(text, reply_markup=task_actions(task_id, archived))
         else:
             await message.answer(f"📝 {t}")
+
+# ----------------- CREATE TASK -----------------
+@router.message(Command("create_task"))
+async def task_create_start(message: Message):
+    user_id = message.from_user.id
+    await redis_client.set_fsm_step(user_id, FSMState.TASK_CREATE_TITLE)
+    await message.answer("Введите заголовок задачи:")
+
 
 # ----------------- STUB CALLBACKS -----------------
 @router.callback_query(lambda c: c.data and c.data.startswith("task_delete:"))

@@ -6,7 +6,7 @@ from aiogram.filters import Command
 
 from src.keyboards.category import category_actions, categories_menu
 from src.database.redis_client import redis_client
-from src.database.statements import FSMState, UserState
+from src.database.states import FSMState, UserState
 from ..config import settings
 
 router = Router()

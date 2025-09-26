@@ -5,7 +5,7 @@ from aiogram import Router
 from aiogram.types import Message
 
 from src.database.redis_client import redis_client, UserState
-from src.database.statements import FSMState
+from src.database.states import FSMState
 from ..config import settings
 
 router = Router()
@@ -64,7 +64,6 @@ async def fsm_login(message: Message, step: FSMState, text: str, user_id: int):
         else:
             await message.answer("❌ Неверный email или пароль.")
 
-        # Очистка FSM
         await redis_client.delete_fsm_step(user_id)
         await redis_client.redis.delete(redis_key(user_id, "login_email"))
 
@@ -114,7 +113,6 @@ async def fsm_register(message: Message, step: FSMState, text: str, user_id: int
         else:
             await message.answer("❌ Ошибка регистрации")
 
-        # Очистка FSM и временных данных
         await redis_client.delete_fsm_step(user_id)
         await redis_client.redis.delete(redis_key(user_id, "register_email"))
         await redis_client.redis.delete(redis_key(user_id, "register_password"))
@@ -159,6 +157,67 @@ async def fsm_category(message: Message, step: FSMState, text: str, user_id: int
             await message.answer("❌ Ошибка при обновлении категории")
         await redis_client.delete_fsm_step(user_id)
         await redis_client.redis.delete(redis_key(user_id, "category_update_id"))
+
+
+async def task_create_fsm(message: Message):
+    user_id = message.from_user.id
+    step = await redis_client.get_fsm_step(user_id)
+    text = message.text.strip()
+
+    # --- Шаг 1: заголовок ---
+    if step == FSMState.TASK_CREATE_TITLE:
+        await redis_client.redis.set(f"user:{user_id}:task_title", text, ex=600)
+        await redis_client.set_fsm_step(user_id, FSMState.TASK_CREATE_DESCRIPTION)
+        await message.answer("Введите описание задачи:")
+        return
+
+    # --- Шаг 2: описание ---
+    if step == FSMState.TASK_CREATE_DESCRIPTION:
+        await redis_client.redis.set(f"user:{user_id}:task_description", text, ex=600)
+        await redis_client.set_fsm_step(user_id, FSMState.TASK_CREATE_CATEGORY)
+        await message.answer("Введите категорию (или оставьте пустой для 'Без категории'):")
+        return
+
+    # --- Шаг 3: категория ---
+    if step == FSMState.TASK_CREATE_CATEGORY:
+        category = text if text else None
+        await redis_client.redis.set(f"user:{user_id}:task_category", category, ex=600)
+        await redis_client.set_fsm_step(user_id, FSMState.TASK_CREATE_PRIORITY)
+        await message.answer("Введите приоритет (LOW, MEDIUM, HIGH):")
+        return
+
+    # --- Шаг 4: приоритет и создание ---
+    if step == FSMState.TASK_CREATE_PRIORITY:
+        priority = text.upper()
+        if priority not in ["LOW", "MEDIUM", "HIGH"]:
+            await message.answer("⚠️ Некорректный приоритет. Используйте: LOW, MEDIUM, HIGH")
+            return
+
+        title = await redis_client.redis.get(f"user:{user_id}:task_title")
+        description = await redis_client.redis.get(f"user:{user_id}:task_description")
+        category = await redis_client.redis.get(f"user:{user_id}:task_category")
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{API_URL}/tasks",
+                json={
+                    "title": title,
+                    "description": description,
+                    "category_id": category,
+                    "priority": priority
+                },
+                headers={"Authorization": f"Bearer {await redis_client.get_user_token(user_id)}"}
+            )
+
+        if resp.status_code == 201:
+            await message.answer("✅ Задача успешно создана!")
+        else:
+            await message.answer("❌ Ошибка при создании задачи.")
+
+        await redis_client.delete_fsm_step(user_id)
+        await redis_client.redis.delete(f"user:{user_id}:task_title")
+        await redis_client.redis.delete(f"user:{user_id}:task_description")
+        await redis_client.redis.delete(f"user:{user_id}:task_category")
 
 # ----------------- MAIN HANDLER -----------------
 @router.message()
