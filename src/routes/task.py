@@ -97,9 +97,7 @@ async def newtask_description(message: Message, state: FSMContext):
     await state.update_data(description=description)
     await state.set_state(TaskStates.create_priority)
     await message.answer(
-        "Выберите приоритет (кнопкой или цифрой):\n"
-        "1 — низкий, 2 — средний, 3 — высокий, 4 — срочный\n"
-        "или: low/medium/high/urgent либо по-русски: низкий/средний/высокий/срочный",
+        "Выберите приоритет (кнопкой или цифрой)",
         reply_markup=priority_keyboard()
     )
 
@@ -115,8 +113,7 @@ async def newtask_priority_text(message: Message, state: FSMContext):
         mapped = _RU_PRIORITY_TO_EN.get(raw, raw)
         if mapped not in _ALLOWED_PRIORITIES:
             await message.answer(
-                "Некорректный приоритет. Допустимо: 1..4 | low/medium/high/urgent | "
-                "низкий/средний/высокий/срочный",
+                "Некорректный приоритет. Допустимо: 1..4",
                 reply_markup=priority_keyboard()
             )
             return
@@ -125,7 +122,7 @@ async def newtask_priority_text(message: Message, state: FSMContext):
     await state.set_state(TaskStates.create_due_date)
     await message.answer(
         "Выберите быстрый вариант или введите дату в формате <b>DD-MM-YYYY</b>.\n"
-        "Также принимается: «сегодня», «завтра», «+3», «15.10.2025», «YYYY-MM-DD», или «-» чтобы пропустить.",
+        "Или «-» чтобы пропустить.",
         reply_markup=due_quick_keyboard()
     )
 
