@@ -9,7 +9,7 @@ from src.database.redis_client import redis_client
 from src.keyboards.task import task_actions, priority_keyboard, due_quick_keyboard
 from src.keyboards.common import cancel_keyboard
 from src.services.http_client import client
-from src.utils.translations import STATUS_RU, PRIORITY_RU
+from src.utils.translations import tr_status, tr_priority
 from src.utils.dates import parse_due, format_due
 from .states import TaskStates
 
@@ -19,12 +19,6 @@ router = Router()
 _ALLOWED_PRIORITIES = {"low", "medium", "high", "urgent"}
 _NUM_TO_PRIORITY = {"1": "low", "2": "medium", "3": "high", "4": "urgent"}
 _RU_PRIORITY_TO_EN = {"низкий": "low", "средний": "medium", "высокий": "high", "срочный": "urgent"}
-
-def _fmt_priority(value: str) -> str:
-    return PRIORITY_RU.get(value, value or "—")
-
-def _fmt_status(value: str) -> str:
-    return STATUS_RU.get(value, value or "—")
 
 def _iso_today() -> str:
     return date.today().isoformat()
@@ -58,8 +52,8 @@ async def list_tasks(message: Message):
             continue
 
         title = t.get("title", "Без названия")
-        status = _fmt_status(t.get("status", "todo"))
-        priority = _fmt_priority(t.get("priority", "medium"))
+        status = tr_status(t.get("status"))
+        priority = tr_priority(t.get("priority"))
         category = t.get("category", {}).get("name") if t.get("category") else "—"
         due_date = t.get("due_date")
         archived = bool(t.get("archived", False))
