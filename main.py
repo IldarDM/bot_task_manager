@@ -6,13 +6,18 @@ from src.config import settings
 from src.database.redis_client import redis_client
 from src.routes import setup_handlers
 
+from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
+from redis.asyncio import from_url
+
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.log_level))
 logger = logging.getLogger(__name__)
 
-# Initialize bot and dispatcher
+# Initialize bot and dispatcher with Redis FSM storage
 bot = create_bot(settings.bot_token)
-dp = create_dispatcher()
+redis = from_url(settings.redis_url, decode_responses=True)
+storage = RedisStorage(redis=redis, key_builder=DefaultKeyBuilder(with_bot_id=True))
+dp = create_dispatcher(storage=storage)
 
 # Setup routes
 dp.include_router(setup_handlers())

@@ -6,11 +6,11 @@ from aiogram.filters import Command
 
 from src.keyboards.task import task_actions
 from src.database.redis_client import redis_client
-from src.database.states import FSMState, UserState
-from ..config import settings
+from src.config import settings
 
 router = Router()
 API_URL = f"{settings.api_base_url}/api/v1"
+
 
 # ----------------- LIST TASKS -----------------
 @router.message(Command("tasks"))
