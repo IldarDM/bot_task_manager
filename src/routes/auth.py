@@ -42,14 +42,21 @@ async def login_password(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     email = data.get("email")
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{API_URL}/auth/login", json={"email": email, "password": pwd})
+
+    async with httpx.AsyncClient(base_url=API_URL, timeout=15.0) as c:
+        resp = await c.post("/auth/login", json={"email": email, "password": pwd})
+
     if resp.status_code == 200:
-        token = resp.json().get("access_token")
-        await redis_client.set_user_token(message.from_user.id, token)
-        await redis_client.set_user_state(message.from_user.id, UserState.LOGGED_IN)
-        await message.answer("✅ Авторизация успешна!")
-        await state.clear()
+        body = resp.json()
+        access = body.get("access_token")
+        refresh = body.get("refresh_token")
+        if access and refresh:
+            await redis_client.set_user_tokens(message.from_user.id, access, refresh)
+            await redis_client.set_user_state(message.from_user.id, UserState.LOGGED_IN)
+            await message.answer("✅ Авторизация успешна!")
+            await state.clear()
+        else:
+            await message.answer("❌ Ошибка авторизации: сервер не выдал токены.")
     else:
         await message.answer("❌ Неверный email или пароль.")
 
@@ -95,11 +102,13 @@ async def register_password_confirm(message: Message, state: FSMContext):
     if confirm != pwd:
         await message.answer("❌ Пароли не совпадают. Попробуйте ещё раз:")
         return
+
     first_name = message.from_user.first_name or ""
     last_name = message.from_user.last_name or ""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{API_URL}/auth/register",
+
+    async with httpx.AsyncClient(base_url=API_URL, timeout=15.0) as c:
+        resp = await c.post(
+            "/auth/register",
             json={"email": email, "first_name": first_name, "last_name": last_name, "password": pwd}
         )
     if resp.status_code == 201:
@@ -113,17 +122,18 @@ async def register_password_confirm(message: Message, state: FSMContext):
 @router.message(Command("logout"))
 async def logout_handler(message: Message):
     user_id = message.from_user.id
-    token = await redis_client.get_user_token(user_id)
-    if not token:
+    access, refresh = await redis_client.get_user_tokens(user_id)
+    if not access and not refresh:
         await message.answer("Вы и так не авторизованы 🙂")
         return
 
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{API_URL}/auth/logout",
-            headers={"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(base_url=API_URL, timeout=15.0) as c:
+        await c.post(
+            "/auth/logout",
+            headers={"Authorization": f"Bearer {access}"} if access else {},
+            json={"refresh_token": refresh} if refresh else None
         )
 
-    await redis_client.delete_user_token(user_id)
+    await redis_client.delete_user_tokens(user_id)
     await redis_client.set_user_state(user_id, UserState.LOGGED_OUT)
     await message.answer("👋 Вы вышли из аккаунта.")
