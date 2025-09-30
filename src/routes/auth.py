@@ -7,14 +7,12 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from src.database.redis_client import redis_client
-from src.database.statements import UserState
 from src.services.http_client import client
 from .states import AuthStates
 from src.keyboards.common import cancel_keyboard, auth_retry_keyboard
 
 router = Router()
 API_URL = "/api/v1"
-
 
 EMAIL_REGEX = re.compile(r"^[\w\.-]+@[\w\.-]+\.\w+$")
 MIN_PASSWORD_LENGTH = 6
@@ -57,7 +55,6 @@ async def login_password(message: Message, state: FSMContext):
         refresh = body.get("refresh_token")
         if access and refresh:
             await redis_client.set_user_tokens(message.from_user.id, access, refresh)
-            await redis_client.set_user_state(message.from_user.id, UserState.LOGGED_IN)
             await message.answer("✅ Авторизация успешна!")
             await state.clear()
         else:
@@ -67,7 +64,7 @@ async def login_password(message: Message, state: FSMContext):
         await message.answer("Выберите действие:", reply_markup=auth_retry_keyboard())
 
 
-# ----------------- REGISTER (с автологином) -----------------
+# ----------------- REGISTER (автологин) -----------------
 @router.message(Command("register"))
 async def register_start(message: Message, state: FSMContext):
     await state.set_state(AuthStates.reg_email)
@@ -115,13 +112,11 @@ async def register_password_confirm(message: Message, state: FSMContext):
         await message.answer("❌ Пароли не совпадают. Попробуйте ещё раз:", reply_markup=cancel_keyboard())
         return
 
-    first_name = message.from_user.first_name or ""
-    last_name = message.from_user.last_name or ""
-
     async with httpx.AsyncClient(base_url=API_URL, timeout=15.0) as c:
         resp = await c.post(
             "/auth/register",
-            json={"email": email, "first_name": first_name, "last_name": last_name, "password": pwd}
+            json={"email": email, "first_name": message.from_user.first_name or "",
+                  "last_name": message.from_user.last_name or "", "password": pwd}
         )
 
     if resp.status_code != 201:
@@ -138,7 +133,6 @@ async def register_password_confirm(message: Message, state: FSMContext):
         refresh = body.get("refresh_token")
         if access and refresh:
             await redis_client.set_user_tokens(message.from_user.id, access, refresh)
-            await redis_client.set_user_state(message.from_user.id, UserState.LOGGED_IN)
             await message.answer("🎉 Регистрация успешна и вы уже вошли в аккаунт. Добро пожаловать!")
         else:
             await message.answer("✅ Регистрация успешна! Но не удалось выполнить автологин. Используйте /login.")
@@ -148,7 +142,7 @@ async def register_password_confirm(message: Message, state: FSMContext):
     await state.clear()
 
 
-# ----------------- ME (профиль) -----------------
+# ----------------- ME -----------------
 @router.message(Command("me"))
 async def me(message: Message):
     user_id = message.from_user.id
@@ -158,9 +152,7 @@ async def me(message: Message):
         email = data.get("email", "—")
         first = data.get("first_name", "—")
         last = data.get("last_name", "—")
-        await message.answer(
-            f"👤 Профиль:\nEmail: <b>{email}</b>\nИмя: {first}\nФамилия: {last}"
-        )
+        await message.answer(f"👤 Профиль:\nEmail: <b>{email}</b>\nИмя: {first}\nФамилия: {last}")
     elif resp.status_code in (401, 403):
         await message.answer("⚠️ Вы не авторизованы. Используйте /login")
     else:
@@ -171,7 +163,8 @@ async def me(message: Message):
 @router.message(Command("logout"))
 async def logout_handler(message: Message):
     user_id = message.from_user.id
-    access, refresh = await redis_client.get_user_tokens(user_id)
+    access = await redis_client.get_user_access_token(user_id)
+    refresh = await redis_client.get_user_refresh_token(user_id)
     if not access and not refresh:
         await message.answer("Вы и так не авторизованы 🙂")
         return
@@ -184,5 +177,4 @@ async def logout_handler(message: Message):
         )
 
     await redis_client.delete_user_tokens(user_id)
-    await redis_client.set_user_state(user_id, UserState.LOGGED_OUT)
     await message.answer("👋 Вы вышли из аккаунта.")

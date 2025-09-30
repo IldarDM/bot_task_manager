@@ -15,8 +15,7 @@ router = Router()
 @router.message(Command("categories"))
 async def list_categories(message: Message):
     user_id = message.from_user.id
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await message.answer("⚠️ Сначала войдите через /login")
         return
 
@@ -51,8 +50,7 @@ async def newcategory_create(message: Message, state: FSMContext):
         await message.answer("Название не может быть пустым. Введите название категории:", reply_markup=cancel_keyboard())
         return
 
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await state.clear()
         await message.answer("⚠️ Сначала войдите через /login")
         return
@@ -70,8 +68,7 @@ async def category_delete(callback: CallbackQuery):
     user_id = callback.from_user.id
     cat_id = callback.data.split(":", 1)[1]
 
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
         return
 
@@ -102,8 +99,7 @@ async def category_update_name(message: Message, state: FSMContext):
         await message.answer("Название не может быть пустым. Введите новое название:", reply_markup=cancel_keyboard())
         return
 
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await state.clear()
         await message.answer("⚠️ Сначала войдите через /login")
         return

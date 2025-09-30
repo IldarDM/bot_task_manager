@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 
 from aiogram import Router
 from aiogram.types import Message, CallbackQuery
@@ -10,6 +10,7 @@ from src.keyboards.task import task_actions, priority_keyboard, due_quick_keyboa
 from src.keyboards.common import cancel_keyboard
 from src.services.http_client import client
 from src.utils.translations import STATUS_RU, PRIORITY_RU
+from src.utils.dates import parse_due, format_due
 from .states import TaskStates
 
 router = Router()
@@ -31,20 +32,12 @@ def _iso_today() -> str:
 def _iso_plus_days(n: int) -> str:
     return (date.today() + timedelta(days=n)).isoformat()
 
-def _format_date_ru(iso_date: str) -> str:
-    try:
-        d = datetime.fromisoformat(iso_date).date()
-        return d.strftime("%d.%m.%Y")
-    except Exception:
-        return iso_date
-
 
 # ----------------- LIST TASKS -----------------
 @router.message(Command("tasks"))
 async def list_tasks(message: Message):
     user_id = message.from_user.id
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await message.answer("⚠️ Вы не авторизованы. Используйте /login")
         return
 
@@ -74,7 +67,7 @@ async def list_tasks(message: Message):
 
         text = f"📝 {title}\nСтатус: {status}\nПриоритет: {priority}\nКатегория: {category}"
         if due_date:
-            text += f"\nДедлайн: {_format_date_ru(due_date)}"
+            text += f"\nДедлайн: {format_due(due_date)}"
 
         await message.answer(text, reply_markup=task_actions(task_id, archived))
 
@@ -83,7 +76,7 @@ async def list_tasks(message: Message):
 @router.message(Command("newtask"))
 async def newtask_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    if not await redis_client.get_user_access_token(user_id):
+    if not await redis_client.is_authenticated(user_id):
         await message.answer("⚠️ Сначала войдите через /login")
         return
 
@@ -112,7 +105,7 @@ async def newtask_description(message: Message, state: FSMContext):
     await message.answer(
         "Выберите приоритет (кнопкой или цифрой):\n"
         "1 — низкий, 2 — средний, 3 — высокий, 4 — срочный\n"
-        "либо введите: low/medium/high/urgent или по-русски: низкий/средний/высокий/срочный",
+        "или: low/medium/high/urgent либо по-русски: низкий/средний/высокий/срочный",
         reply_markup=priority_keyboard()
     )
 
@@ -137,7 +130,8 @@ async def newtask_priority_text(message: Message, state: FSMContext):
     await state.update_data(priority=priority)
     await state.set_state(TaskStates.create_due_date)
     await message.answer(
-        "Выберите быстрый вариант или введите дату (YYYY-MM-DD): «сегодня», «завтра», «15.10.2025», «-»",
+        "Выберите быстрый вариант или введите дату в формате <b>DD-MM-YYYY</b>.\n"
+        "Также принимается: «сегодня», «завтра», «+3», «15.10.2025», «YYYY-MM-DD», или «-» чтобы пропустить.",
         reply_markup=due_quick_keyboard()
     )
 
@@ -151,7 +145,8 @@ async def newtask_priority_cb(callback: CallbackQuery, state: FSMContext):
     await state.update_data(priority=priority)
     await state.set_state(TaskStates.create_due_date)
     await callback.message.answer(
-        "Выберите быстрый вариант или введите дату (YYYY-MM-DD): «сегодня», «завтра», «15.10.2025», «-»",
+        "Выберите быстрый вариант или введите дату в формате <b>DD-MM-YYYY</b>.\n"
+        "Также принимается: «сегодня», «завтра», «+3», «15.10.2025», «YYYY-MM-DD», или «-».",
         reply_markup=due_quick_keyboard()
     )
     await callback.answer()
@@ -193,24 +188,15 @@ async def newtask_due_quick(callback: CallbackQuery, state: FSMContext):
 @router.message(TaskStates.create_due_date)
 async def newtask_due_date_text(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    due = (message.text or "").strip()
+    raw = (message.text or "").strip()
 
-    quick_map = {
-        "сегодня": _iso_today(),
-        "завтра": _iso_plus_days(1),
-        "+3": _iso_plus_days(3),
-        "-": None,
-    }
-    iso_date = quick_map.get(due.lower())
-
-    if iso_date is None and due not in {"-", ""}:
-        try:
-            dt = datetime.fromisoformat(due).date()
-            iso_date = dt.isoformat()
-        except Exception:
-            await message.answer("Не похоже на дату. Введите YYYY-MM-DD, «сегодня», «завтра», «+3» или «-».",
-                                 reply_markup=due_quick_keyboard())
-            return
+    iso_date = parse_due(raw)
+    if iso_date is None and raw not in {"-", ""}:
+        await message.answer(
+            "Не похоже на дату. Примеры: «сегодня», «завтра», «+3», <b>15-10-2025</b>, 15.10.2025, 2025-10-15 или «-».",
+            reply_markup=due_quick_keyboard()
+        )
+        return
 
     form = await state.get_data()
     payload = {
@@ -241,7 +227,7 @@ async def task_update_start(callback: CallbackQuery, state: FSMContext):
         "- title\n"
         "- description\n"
         "- priority (1..4 | low/medium/high/urgent | низкий/средний/высокий/срочный)\n"
-        "- due_date (YYYY-MM-DD | сегодня | завтра | +3 | -)\n",
+        "- due_date (<b>DD-MM-YYYY</b> | сегодня | завтра | +3 | -)\n",
         reply_markup=cancel_keyboard()
     )
     await callback.answer()
@@ -258,12 +244,12 @@ async def task_update_field(message: Message, state: FSMContext):
     await state.set_state(TaskStates.update_value)
     if field == "priority":
         await message.answer(
-            "Введите новое значение приоритета (1..4 | low/medium/high/urgent | низкий/средний/высокий/срочный):",
+            "Введите новый приоритет (1..4 | low/medium/high/urgent | низкий/средний/высокий/срочный):",
             reply_markup=priority_keyboard()
         )
     elif field == "due_date":
         await message.answer(
-            "Введите новую дату (YYYY-MM-DD) или выберите быстрый вариант:",
+            "Введите новую дату в формате <b>DD-MM-YYYY</b> или выберите быстрый вариант:",
             reply_markup=due_quick_keyboard()
         )
     else:
@@ -295,17 +281,14 @@ async def task_update_value(message: Message, state: FSMContext):
         payload["priority"] = mapped
 
     elif field == "due_date":
-        quick_map = {"сегодня": _iso_today(), "завтра": _iso_plus_days(1), "+3": _iso_plus_days(3), "-": None}
-        iso_date = quick_map.get(raw_value.lower())
+        iso_date = parse_due(raw_value)
         if iso_date is None and raw_value != "-":
-            try:
-                dt = datetime.fromisoformat(raw_value).date()
-                iso_date = dt.isoformat()
-            except Exception:
-                await message.answer("Не похоже на дату. Введите YYYY-MM-DD, «сегодня», «завтра», «+3» или «-».",
-                                     reply_markup=due_quick_keyboard())
-                return
-        payload["due_date"] = iso_date  # None снимает дедлайн
+            await message.answer(
+                "Не похоже на дату. Примеры: «сегодня», «завтра», «+3», <b>15-10-2025</b>, 15.10.2025, 2025-10-15 или «-».",
+                reply_markup=due_quick_keyboard()
+            )
+            return
+        payload["due_date"] = iso_date
 
     else:
         payload[field] = raw_value
@@ -324,8 +307,7 @@ async def task_delete(callback: CallbackQuery):
     user_id = callback.from_user.id
     task_id = int(callback.data.split(":", 1)[1])
 
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
         return
 
@@ -344,8 +326,7 @@ async def task_archive(callback: CallbackQuery):
     user_id = callback.from_user.id
     task_id = int(callback.data.split(":", 1)[1])
 
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
         return
 
@@ -364,8 +345,7 @@ async def task_restore(callback: CallbackQuery):
     user_id = callback.from_user.id
     task_id = int(callback.data.split(":", 1)[1])
 
-    access = await redis_client.get_user_access_token(user_id)
-    if not access:
+    if not await redis_client.is_authenticated(user_id):
         await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
         return
 

@@ -4,16 +4,16 @@ from typing import Optional, Tuple
 import redis.asyncio as redis
 
 from ..config import settings
-from .states import UserState
 
 logger = logging.getLogger(__name__)
 
 
 class RedisClient:
-    """Redis client: хранение access/refresh токенов и долгосрочного состояния пользователя."""
+    """Redis client: хранение access/refresh токенов пользователя."""
 
     def __init__(self):
         self.redis: Optional[redis.Redis] = None
+        self._ns = "user"
 
     async def connect(self):
         try:
@@ -29,44 +29,14 @@ class RedisClient:
             await self.redis.close()
             logger.info("Disconnected from Redis")
 
-    # -------- USER STATE (long-lived) --------
-    async def set_user_state(self, user_id: int, state: UserState) -> bool:
-        if not self.redis:
-            return False
-        try:
-            await self.redis.set(f"user:{user_id}:state", state.value)
-            return True
-        except Exception as e:
-            logger.error(f"Redis set state error: {e}")
-            return False
-
-    async def get_user_state(self, user_id: int) -> Optional[UserState]:
-        if not self.redis:
-            return None
-        try:
-            value = await self.redis.get(f"user:{user_id}:state")
-            return UserState(value) if value else None
-        except Exception as e:
-            logger.error(f"Redis get state error: {e}")
-            return None
-
-    async def delete_user_state(self, user_id: int) -> bool:
-        if not self.redis:
-            return False
-        try:
-            await self.redis.delete(f"user:{user_id}:state")
-            return True
-        except Exception as e:
-            logger.error(f"Redis delete state error: {e}")
-            return False
-
-    # -------- TOKENS (access + refresh) --------
+    # keys
     def _key_access(self, user_id: int) -> str:
-        return f"user:{user_id}:access_token"
+        return f"{self._ns}:{user_id}:access_token"
 
     def _key_refresh(self, user_id: int) -> str:
-        return f"user:{user_id}:refresh_token"
+        return f"{self._ns}:{user_id}:refresh_token"
 
+    # tokens
     async def set_user_tokens(self, user_id: int, access: str, refresh: str) -> bool:
         if not self.redis:
             return False
@@ -131,6 +101,17 @@ class RedisClient:
             return True
         except Exception as e:
             logger.error(f"Redis delete tokens error: {e}")
+            return False
+
+    async def is_authenticated(self, user_id: int) -> bool:
+        """Пользователь считается авторизованным, если у него есть refresh-токен."""
+        if not self.redis:
+            return False
+        try:
+            refresh = await self.redis.get(self._key_refresh(user_id))
+            return bool(refresh)
+        except Exception as e:
+            logger.error(f"Redis is_authenticated error: {e}")
             return False
 
 
