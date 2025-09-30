@@ -1,13 +1,14 @@
 import asyncio
 import logging
 
+from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
+from redis.asyncio import from_url
+
 from src.bot import create_bot, create_dispatcher
 from src.config import settings
 from src.database.redis_client import redis_client
 from src.routes import setup_handlers
 
-from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
-from redis.asyncio import from_url
 
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.log_level))

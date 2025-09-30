@@ -1,13 +1,12 @@
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.base import BaseStorage
+from aiogram.client.default import DefaultBotProperties
 from typing import Optional
 
 
 def create_bot(token: str) -> Bot:
-    """Create and configure bot instance."""
-    return Bot(token=token)
+    return Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))
 
 
 def create_dispatcher(storage: Optional[BaseStorage] = None) -> Dispatcher:
-    """Create and configure dispatcher instance."""
     return Dispatcher(storage=storage)

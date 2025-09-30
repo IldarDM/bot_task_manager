@@ -1,37 +1,61 @@
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
-
-from src.database.redis_client import redis_client
-from src.database.states import UserState, FSMState
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
 
 router = Router()
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
-    user_id = message.from_user.id
-    await redis_client.set_user_state(user_id, UserState.STARTED)
-
-    await message.answer(f"""
-Салют, {message.from_user.full_name}!
-Добро пожаловать в TaskFlow - бота, призванного помочь разобраться с вечными насущными делами 🚀
-
-Используй /help, чтобы увидеть доступные команды.
-Используй /login, чтобы авторизоваться, или /register, если ещё нет аккаунта.
-""")
+    await message.answer(
+        f"Салют, {message.from_user.full_name}!\n"
+        "Это TaskFlow — ваш помощник по задачам.\n\n"
+        "Команды:\n"
+        "• /register — регистрация\n"
+        "• /login — вход\n"
+        "• /logout — выход\n"
+        "• /tasks — список задач\n"
+        "• /newtask — новая задача\n"
+        "• /categories — категории\n"
+        "• /help — помощь\n"
+        "• /cancel — отмена текущего действия\n\n"
+        "Подсказка: в шагах мастера всегда можно нажать «Отмена»."
+    )
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer("""
-Доступные команды:
+    await message.answer(
+        "Помощь:\n"
+        "• Отмена: нажмите кнопку «Отмена» или используйте /cancel — это прервёт текущее действие.\n"
+        "• Приоритет: выбирайте кнопками или введите цифру 1..4 (низкий..срочный), "
+        "также поддерживаются low/medium/high/urgent и русские слова.\n"
+        "• Дедлайн: можно нажать «Сегодня/Завтра/+3 дня» или ввести дату YYYY-MM-DD. "
+        "Чтобы убрать дедлайн — отправьте «-».\n\n"
+        "Полезные команды: /tasks /newtask /categories /login /logout"
+    )
 
-/start - Запуск бота
-/help - Показать это сообщение
-/register - Зарегистрировать аккаунт
-/login - Войти в аккаунт
 
-Скоро появятся новые функции...
-""")
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "✅ Действие отменено. Что дальше?\n"
+        "Например: /tasks, /newtask, /categories, /help"
+    )
 
+
+@router.message(lambda m: (m.text or "").strip().lower() == "отмена")
+async def msg_cancel(message: Message, state: FSMContext):
+    await cmd_cancel(message, state)
+
+
+@router.callback_query(lambda c: c.data == "cancel")
+async def cb_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer(
+        "✅ Действие отменено. Что дальше?\n"
+        "Например: /tasks, /newtask, /categories, /help"
+    )
+    await callback.answer()

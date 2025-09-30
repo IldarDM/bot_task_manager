@@ -12,3 +12,13 @@ class AuthStates(StatesGroup):
 class CategoryStates(StatesGroup):
     create_name = State()
     update_name = State()
+
+class TaskStates(StatesGroup):
+    # Create
+    create_title = State()
+    create_description = State()
+    create_priority = State()
+    create_due_date = State()
+    # Update
+    update_field = State()
+    update_value = State()
