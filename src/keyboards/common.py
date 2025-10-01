@@ -22,3 +22,11 @@ def auth_retry_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
         ]
     )
+
+
+def inline_back_to_menu(task_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="↩️ Назад", callback_data=f"edit:menu:{task_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit:cancel:{task_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)

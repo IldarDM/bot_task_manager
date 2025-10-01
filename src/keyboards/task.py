@@ -1,23 +1,34 @@
-from __future__ import annotations
 from typing import List, Dict, Optional
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-# -------- Общие действия над задачей --------
-def task_actions(task_id: int, is_archived: bool = False) -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(text="✏️ Обновить", callback_data=f"task_update:{task_id}"),
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"task_delete:{task_id}"),
-    ]
-    if is_archived:
-        buttons.append(InlineKeyboardButton(text="♻️ Восстановить", callback_data=f"task_restore:{task_id}"))
+# ==== Общие действия над задачей ====
+
+def task_actions(task_id: int, is_archived: bool = False, status: Optional[str] = None) -> InlineKeyboardMarkup:
+    """
+    Действия над задачей.
+    - Если задача не выполнена: показываем «✅ Завершить».
+    - Если выполнена: «↩️ В работу» и «📦 Архивировать».
+    - Для архивных задач: «♻️ Восстановить».
+    """
+    row1 = [InlineKeyboardButton(text="✏️ Обновить", callback_data=f"task_update:{task_id}")]
+
+    if not is_archived:
+        if status == "done":
+            row1.append(InlineKeyboardButton(text="↩️ В работу", callback_data=f"task_reopen:{task_id}"))
+            row1.append(InlineKeyboardButton(text="📦 Архивировать", callback_data=f"task_archive:{task_id}"))
+        else:
+            row1.append(InlineKeyboardButton(text="✅ Завершить", callback_data=f"task_done:{task_id}"))
     else:
-        buttons.append(InlineKeyboardButton(text="📦 Архивировать", callback_data=f"task_archive:{task_id}"))
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+        row1.append(InlineKeyboardButton(text="♻️ Восстановить", callback_data=f"task_restore:{task_id}"))
+
+    row2 = [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"task_delete:{task_id}")]
+    return InlineKeyboardMarkup(inline_keyboard=[row1, row2])
 
 
-# -------- Клавиатуры для создания --------
+# ==== Клавиатуры для создания ====
+
 def priority_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [
@@ -44,32 +55,22 @@ def due_quick_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# -------- Меню быстрого редактирования --------
-def edit_menu_keyboard(
-    task_id: int,
-    title: Optional[str] = None,
-    priority_human: Optional[str] = None,
-    due_human: Optional[str] = None,
-    category_name: Optional[str] = None,
-) -> InlineKeyboardMarkup:
-    t_title = f"📝 Заголовок{f': {title}' if title else ''}"
-    t_desc = "✍️ Описание"
-    t_prio = f"⚡ Приоритет{f': {priority_human}' if priority_human else ''}"
-    t_due = f"⏰ Дедлайн{f': {due_human}' if due_human else ''}"
-    t_cat = f"📁 Категория{f': {category_name}' if category_name else ''}"
+# ==== Меню быстрого редактирования ====
 
+def edit_menu_keyboard(task_id: int) -> InlineKeyboardMarkup:
+    """
+    Статичное меню редактирования без встраивания значений из задачи.
+    """
     rows = [
         [
-            InlineKeyboardButton(text=t_title, callback_data=f"edit:title:{task_id}"),
-            InlineKeyboardButton(text=t_desc, callback_data=f"edit:desc:{task_id}"),
+            InlineKeyboardButton(text="📝 Заголовок", callback_data=f"edit:title:{task_id}"),
+            InlineKeyboardButton(text="✍️ Описание", callback_data=f"edit:desc:{task_id}"),
         ],
         [
-            InlineKeyboardButton(text=t_prio, callback_data=f"edit:prio:{task_id}"),
-            InlineKeyboardButton(text=t_due, callback_data=f"edit:due:{task_id}"),
+            InlineKeyboardButton(text="⚡ Приоритет", callback_data=f"edit:prio:{task_id}"),
+            InlineKeyboardButton(text="⏰ Дедлайн", callback_data=f"edit:due:{task_id}"),
         ],
-        [
-            InlineKeyboardButton(text=t_cat, callback_data=f"edit:cat:{task_id}"),
-        ],
+        [InlineKeyboardButton(text="📁 Категория", callback_data=f"edit:cat:{task_id}")],
         [
             InlineKeyboardButton(text="↩️ Назад", callback_data=f"edit:back:{task_id}"),
             InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit:cancel:{task_id}"),
@@ -109,7 +110,8 @@ def due_quick_keyboard_for_task(task_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# -------- Выбор категории --------
+# ==== Выбор категории ====
+
 def _paginate(items: List[Dict], page: int, size: int) -> List[Dict]:
     start = page * size
     end = start + size
@@ -122,12 +124,15 @@ def categories_keyboard_for_task(
     page: int = 0,
     page_size: int = 6,
 ) -> InlineKeyboardMarkup:
+    """
+    Список категорий с пагинацией для редактирования задачи.
+    Предполагается, что «Uncategorized» уже отфильтрована на уровне роутов.
+    """
     page_items = _paginate(categories, page, page_size)
-    rows = []
-    for c in page_items:
-        rows.append(
-            [InlineKeyboardButton(text=c.get("name", "—"), callback_data=f"ecat:{task_id}:set:{c.get('id')}")]
-        )
+    rows = [
+        [InlineKeyboardButton(text=c.get("name", "—"), callback_data=f"ecat:{task_id}:set:{c.get('id')}")]
+        for c in page_items
+    ]
 
     nav = []
     if page > 0:
@@ -151,10 +156,15 @@ def categories_keyboard_for_create(
     page: int = 0,
     page_size: int = 6,
 ) -> InlineKeyboardMarkup:
+    """
+    Список категорий с пагинацией для шага создания.
+    Предполагается, что «Uncategorized» уже отфильтрована на уровне роутов.
+    """
     page_items = _paginate(categories, page, page_size)
-    rows = []
-    for c in page_items:
-        rows.append([InlineKeyboardButton(text=c.get("name", "—"), callback_data=f"ccat:set:{c.get('id')}")])
+    rows = [
+        [InlineKeyboardButton(text=c.get("name", "—"), callback_data=f"ccat:set:{c.get('id')}")]
+        for c in page_items
+    ]
 
     nav = []
     if page > 0:
