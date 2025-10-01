@@ -3,7 +3,6 @@ import logging
 import uuid
 from enum import Enum
 from typing import Any, Dict, Optional
-
 import httpx
 
 from src.config import settings
@@ -25,7 +24,6 @@ class BotHttpClient:
         self.base_url = base_url
         self.timeout = httpx.Timeout(timeout)
 
-    # ---------------- NEW: json normalization ----------------
     def _to_jsonable(self, obj: Any) -> Any:
         """
         Делает объект сериализуемым для JSON:
@@ -40,7 +38,6 @@ class BotHttpClient:
         if isinstance(obj, Enum):
             return obj.value
 
-        # pydantic v2 BaseModel
         try:
             from pydantic import BaseModel  # type: ignore
             if isinstance(obj, BaseModel):  # noqa
@@ -79,7 +76,6 @@ class BotHttpClient:
             return norm
         except Exception:
             return "<unserializable>"
-    # ---------------- /NEW ----------------
 
     async def _refresh_tokens(self, user_id: int) -> bool:
         refresh = await redis_client.get_user_refresh_token(user_id)
@@ -145,7 +141,6 @@ class BotHttpClient:
         headers["X-Request-ID"] = req_id
         headers["X-User-ID"] = str(user_id)
 
-        # ---------------- CHANGED: normalize json before sending ----------------
         json_normalized = self._to_jsonable(json) if json is not None else None
         body_for_log = self._safe_body_for_log(json_normalized)
         # -----------------------------------------------------------------------
