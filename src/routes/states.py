@@ -13,12 +13,16 @@ class CategoryStates(StatesGroup):
     create_name = State()
     update_name = State()
 
+
 class TaskStates(StatesGroup):
     # Create
     create_title = State()
     create_description = State()
     create_priority = State()
+    create_category = State()
     create_due_date = State()
+
     # Update
-    update_field = State()
-    update_value = State()
+    update_title = State()
+    update_desc = State()
+    update_due_manual = State()
