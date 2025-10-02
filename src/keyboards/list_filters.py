@@ -90,3 +90,20 @@ def categories_selector(categories: List[dict], page: int = 0, page_size: int = 
         InlineKeyboardButton(text="↩️ Назад", callback_data="tl:filters"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def sort_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Дедлайн", callback_data="tl:sort:set:due_date"),
+            InlineKeyboardButton(text="Приоритет", callback_data="tl:sort:set:priority"),
+        ],
+        [
+            InlineKeyboardButton(text="Обновлено", callback_data="tl:sort:set:updated_at"),
+            InlineKeyboardButton(text="Название", callback_data="tl:sort:set:title"),
+        ],
+        [
+            InlineKeyboardButton(text="↕️ Направление", callback_data="tl:sort:dir"),
+            InlineKeyboardButton(text="↩️ Назад", callback_data="tl:back"),
+        ],
+    ])
