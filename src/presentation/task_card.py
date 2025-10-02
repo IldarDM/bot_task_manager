@@ -1,4 +1,5 @@
-from typing import Dict, Optional
+from typing import Dict
+
 from src.utils.translations import tr_status, tr_priority
 from src.utils.dates import format_due
 from src.keyboards.task_actions import task_actions_keyboard
@@ -10,15 +11,17 @@ def build_task_text(task: Dict) -> str:
     priority = tr_priority(task.get("priority"))
     category = (task.get("category") or {}).get("name") if task.get("category") else "—"
     due_date = task.get("due_date")
+    description = (task.get("description") or "").strip()
 
     text = (
         f"📝 <b>{title}</b>\n"
-        f"Статус: {status}\n"
-        f"Приоритет: {priority}\n"
+        f"Статус: {status}  •  Приоритет: {priority}\n"
         f"Категория: {category}"
     )
     if due_date:
         text += f"\nДедлайн: {format_due(due_date)}"
+    if description:
+        text += f"\n\n{description}"
     return text
 
 
