@@ -3,7 +3,6 @@ from textwrap import shorten
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from src.utils.dates import fmt_ddmmyyyy as _fmt
 from src.utils.translations import tr_priority, tr_status
 
 
