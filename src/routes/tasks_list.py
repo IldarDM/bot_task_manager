@@ -1,5 +1,4 @@
-from datetime import datetime, date, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -9,36 +8,25 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 from src.database.redis_client import redis_client
-from src.services.http_client import client
-from src.utils.dates import format_due
-from src.utils.translations import tr_status, tr_priority
-from src.keyboards.tasks_list import (
-    list_panel_keyboard,
-    priorities_selector,
-    statuses_selector,
-    sort_selector,
-    categories_selector,
+from src.presentation.task_list import group_tasks, build_header, build_list_keyboard
+from src.presentation.task_card import build_task_text, build_task_keyboard
+from src.services.tasks_api import TasksAPI
+from src.services.categories_api import CategoriesAPI
+from src.keyboards.list_filters import (
+    filters_menu, priorities_selector, statuses_selector, categories_selector
 )
 
 router = Router()
 
 DEFAULT_LIMIT = 10
+GROUP_LIMIT = 8
 
 
-class TasksListStates(StatesGroup):
+class ListStates(StatesGroup):
     search = State()
 
 
-# ---------- helpers ----------
-
-def _today_range() -> Tuple[str, str]:
-    today = date.today()
-    start = datetime(today.year, today.month, today.day, 0, 0, 0).isoformat()
-    end = datetime(today.year, today.month, today.day, 23, 59, 59).isoformat()
-    return start, end
-
-
-def _default_profile() -> Dict[str, Any]:
+def _default_prof() -> Dict[str, Any]:
     return {
         "status": ["todo", "in_progress"],
         "priority": [],
@@ -50,95 +38,45 @@ def _default_profile() -> Dict[str, Any]:
         "sort_by": "due_date",
         "sort_order": "asc",
         "view": "active",
-        "skip": 0,
-        "limit": DEFAULT_LIMIT,
+        "skip": 0, "limit": DEFAULT_LIMIT,
+        "grp_offsets": {"urgent": 0, "overdue": 0, "today": 0, "rest": 0},
+        "grp_limit": GROUP_LIMIT,
         "cat_page": 0,
     }
 
 
-async def _ensure_auth_or_warn(message: Message) -> bool:
+async def _ensure_auth(message: Message) -> bool:
     if not await redis_client.is_authenticated(message.from_user.id):
         await message.answer("⚠️ Вы не авторизованы. Используйте /login")
         return False
     return True
 
 
-async def _fetch_categories(user_id: int) -> List[Dict]:
-    resp = await client.request(user_id, "GET", "/categories/")
-    if resp.status_code != 200:
-        return []
-    data = resp.json() or []
-    items = data if isinstance(data, list) else []
-    return [c for c in items if str(c.get("name", "")).strip().lower() != "uncategorized"]
-
-
-def _params_from_profile(prof: Dict) -> Dict[str, Any]:
+def _params_from_prof(p: Dict[str, Any]) -> Dict[str, Any]:
     params: Dict[str, Any] = {
-        "skip": prof.get("skip", 0),
-        "limit": prof.get("limit", DEFAULT_LIMIT),
-        "sort_by": prof.get("sort_by", "due_date"),
-        "sort_order": prof.get("sort_order", "asc"),
+        "skip": p["skip"], "limit": p["limit"],
+        "sort_by": p.get("sort_by", "due_date"),
+        "sort_order": p.get("sort_order", "asc"),
         "include_deleted": False,
     }
-    status = prof.get("status")
-    if status:
-        params["status"] = status
-    prio = prof.get("priority")
-    if prio:
-        params["priority"] = prio
-    if prof.get("category_id") is not None:
-        params["category_id"] = prof["category_id"]
-    if prof.get("due_date_from"):
-        params["due_date_from"] = prof["due_date_from"]
-    if prof.get("due_date_to"):
-        params["due_date_to"] = prof["due_date_to"]
-    if prof.get("is_overdue") is not None:
-        params["is_overdue"] = prof["is_overdue"]
-    if prof.get("search"):
-        params["search"] = prof["search"]
-
-    if prof.get("view") == "archived":
+    if p.get("view") == "archived":
         params["status"] = ["archived"]
-        if prof.get("sort_by") == "due_date":
-            params["sort_by"] = "updated_at"
-            params["sort_order"] = "desc"
+    else:
+        if p.get("status"):
+            params["status"] = p["status"]
+    if p.get("priority"):
+        params["priority"] = p["priority"]
+    if p.get("category_id") is not None:
+        params["category_id"] = p["category_id"]
+    if p.get("due_date_from"):
+        params["due_date_from"] = p["due_date_from"]
+    if p.get("due_date_to"):
+        params["due_date_to"] = p["due_date_to"]
+    if p.get("is_overdue") is not None:
+        params["is_overdue"] = p["is_overdue"]
+    if p.get("search"):
+        params["search"] = p["search"]
     return params
-
-
-def _badge_list(prof: Dict, total: int, page: int, pages: int) -> str:
-    parts: List[str] = []
-    st = prof.get("status") or []
-    if st:
-        parts.append("Статус: " + ",".join(st))
-    pr = prof.get("priority") or []
-    if pr:
-        parts.append("Приор: " + ",".join(pr))
-    if prof.get("category_id") is not None:
-        parts.append(f"Категория: id={prof['category_id']}")
-    if prof.get("is_overdue"):
-        parts.append("Просрочено")
-    if prof.get("due_date_from") and prof.get("due_date_to"):
-        parts.append("Сегодня")
-    if prof.get("search"):
-        parts.append(f"Поиск: “{prof['search']}”")
-    parts.append(f"Сорт: {prof.get('sort_by')} {prof.get('sort_order')}")
-    parts.append(f"Стр. {page}/{pages} • всего {total}")
-    if prof.get("view") == "archived":
-        parts.append("Режим: Архив")
-    return " · ".join(parts)
-
-
-def _render_tasks_lines(tasks: List[Dict]) -> str:
-    lines: List[str] = []
-    for t in tasks:
-        task_id = t.get("id")
-        title = t.get("title", "Без названия")
-        status = tr_status(t.get("status"))
-        prio = tr_priority(t.get("priority"))
-        due = t.get("due_date")
-        due_s = f" • ⏰ {format_due(due)}" if due else ""
-        lines.append(f"{task_id}. {title} — {status} • {prio}{due_s}")
-    return "\n".join(lines) if lines else "Нет задач по текущим фильтрам."
 
 
 async def _safe_edit(message_or_cb, text: str, kb):
@@ -156,313 +94,350 @@ async def _safe_edit(message_or_cb, text: str, kb):
             raise
 
 
-async def _reload_list(message_or_cb, prof: Dict):
+async def _render_list(message_or_cb, prof: Dict[str, Any]):
     user_id = message_or_cb.from_user.id
-    params = _params_from_profile(prof)
-    resp = await client.request(user_id, "GET", "/tasks/", params=params)
+    params = _params_from_prof(prof)
+    resp = await TasksAPI.list(user_id, params)
     if resp.status_code != 200:
-        await _safe_edit(message_or_cb, "❌ Не удалось загрузить список задач.", kb=list_panel_keyboard(prof, False, False))
+        await _safe_edit(message_or_cb, "❌ Не удалось загрузить задачи.", kb=None)
         return
 
     data = resp.json() or {}
     tasks = data.get("tasks", data if isinstance(data, list) else [])
     total = data.get("total", len(tasks))
-    skip = prof.get("skip", 0)
-    limit = prof.get("limit", DEFAULT_LIMIT)
+    skip = prof["skip"]; limit = prof["limit"]
     page = (skip // limit) + 1 if limit else 1
     pages = max(1, (total + limit - 1) // limit) if limit else 1
-
     has_prev = skip > 0
     has_next = (skip + len(tasks)) < total
 
-    header = _badge_list(prof, total, page, pages)
-    body = _render_tasks_lines(tasks)
-    text = f"🗂 Список задач\n{header}\n\n{body}"
+    groups = group_tasks(tasks)
+    header = build_header(prof, total, page, pages)
+    text = f"🗂 <b>Мои задачи</b>\n{header}\n\n" \
+           f"🔥 Срочные • ⏰ Просрочено • 🎯 Сегодня • Остальные\n" \
+           f"Выберите задачу или откройте 🎛 фильтры."
 
-    await _safe_edit(message_or_cb, text, kb=list_panel_keyboard(prof, has_prev, has_next))
+    kb = build_list_keyboard(groups, prof, has_prev, has_next)
+    await _safe_edit(message_or_cb, text, kb)
 
 
-# ---------- entry ----------
+# Entry ----------------------------------------------------
 
 @router.message(Command("tasks"))
 async def tasks_entry(message: Message, state: FSMContext):
-    if not await _ensure_auth_or_warn(message):
+    if not await _ensure_auth(message):
         return
     data = await state.get_data()
-    prof = data.get("list_prof") or _default_profile()
+    prof = data.get("list_prof") or _default_prof()
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _reload_list(message, prof)
+    await _render_list(message, prof)
 
 
-# ---------- main controls ----------
+# Navigation ------------------------------------------------
 
-@router.callback_query(lambda c: c.data and c.data.startswith("tl:refresh"))
+@router.callback_query(lambda c: c.data and c.data == "tl:refresh")
 async def tl_refresh(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    await _reload_list(callback, prof)
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    await _render_list(callback, prof)
     await callback.answer()
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("tl:page:"))
 async def tl_page(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    prof = data.get("list_prof") or _default_profile()
-    limit = prof.get("limit", DEFAULT_LIMIT)
+    data = await state.get_data(); prof = data.get("list_prof") or _default_prof()
+    limit = prof["limit"]
     if callback.data.endswith(":prev"):
-        prof["skip"] = max(0, prof.get("skip", 0) - limit)
+        prof["skip"] = max(0, prof["skip"] - limit)
     else:
-        prof["skip"] = prof.get("skip", 0) + limit
+        prof["skip"] = prof["skip"] + limit
     await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
+    await _render_list(callback, prof)
     await callback.answer()
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:urgent")
-async def tl_urgent(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    cur = set(prof.get("priority") or [])
-    target = {"high", "urgent"}
-    if cur == target:
-        prof["priority"] = []
+@router.callback_query(lambda c: c.data and c.data.startswith("tl:grp:"))
+async def tl_group_more(callback: CallbackQuery, state: FSMContext):
+    # увеличиваем оффсет внутри секции и просто перерисовываем клавиатуру (весь список)
+    _, _, group, _ = callback.data.split(":")
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    off = prof["grp_offsets"].get(group, 0)
+    prof["grp_offsets"][group] = off + prof["grp_limit"]
+    await state.update_data(list_prof=prof)
+    await _render_list(callback, prof)
+    await callback.answer("Ещё…" )
+
+
+@router.callback_query(lambda c: c.data and c.data == "tl:back_to_list")
+async def tl_back_to_list(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    await _render_list(callback, prof)
+    await callback.answer()
+
+
+# Open card -------------------------------------------------
+
+@router.callback_query(lambda c: c.data and c.data.startswith("tl:open:"))
+async def tl_open(callback: CallbackQuery):
+    task_id = int(callback.data.split(":")[-1])
+    user_id = callback.from_user.id
+    resp = await TasksAPI.get(user_id, task_id)
+    if resp.status_code != 200:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    task = resp.json()
+    await callback.message.edit_text(build_task_text(task), reply_markup=build_task_keyboard(task))
+    await callback.answer()
+
+
+# View toggle -----------------------------------------------
+
+@router.callback_query(lambda c: c.data and c.data == "tl:view:toggle")
+async def tl_view_toggle(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    if prof.get("view") == "archived":
+        prof["view"] = "active"
+        prof["status"] = ["todo", "in_progress"]
     else:
-        prof["priority"] = ["high", "urgent"]
+        prof["view"] = "archived"
+        prof["status"] = []
+        prof["sort_by"] = "updated_at"; prof["sort_order"] = "desc"
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
-    await callback.answer("Фильтр: срочные" if prof["priority"] else "Фильтр приоритета снят")
+    await _render_list(callback, prof)
+    await callback.answer("Режим: Архив" if prof["view"] == "archived" else "Режим: Активные")
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:overdue")
-async def tl_overdue(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    prof["is_overdue"] = None if prof.get("is_overdue") else True
-    prof["skip"] = 0
-    await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
-    await callback.answer("Просрочка вкл" if prof.get("is_overdue") else "Просрочка выкл")
+# Filters panel --------------------------------------------
+
+@router.callback_query(lambda c: c.data and c.data == "tl:filters")
+async def tl_filters_open(callback: CallbackQuery):
+    await callback.message.edit_text("Фильтры:", reply_markup=filters_menu())
+    await callback.answer()
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:today")
-async def tl_today(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    if prof.get("due_date_from") and prof.get("due_date_to"):
-        # выключить
-        prof["due_date_from"] = None
-        prof["due_date_to"] = None
-    else:
-        frm, to = _today_range()
-        prof["due_date_from"] = frm
-        prof["due_date_to"] = to
-    prof["skip"] = 0
-    await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
+@router.callback_query(lambda c: c.data and c.data == "tl:back")
+async def tl_filters_back(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    await _render_list(callback, prof)
     await callback.answer()
 
 
 @router.callback_query(lambda c: c.data and c.data == "tl:reset")
-async def tl_reset(callback: CallbackQuery, state: FSMContext):
-    prof = _default_profile()
+async def tl_filters_reset(callback: CallbackQuery, state: FSMContext):
+    prof = _default_prof()
     await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
+    await _render_list(callback, prof)
     await callback.answer("Фильтры сброшены")
 
 
-@router.callback_query(lambda c: c.data and c.data.startswith("tl:view:toggle"))
-async def tl_view_toggle(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    prof["view"] = "archived" if prof.get("view") != "archived" else "active"
-    # для архива сбрасываем статусы, так как view управляет им сам
-    if prof["view"] == "archived":
-        prof["status"] = []
-    else:
-        prof["status"] = ["todo", "in_progress"]
+# Quick flags
+@router.callback_query(lambda c: c.data and c.data in {"tl:f:urgent", "tl:f:overdue", "tl:f:today"})
+async def tl_filters_flags(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+
+    if callback.data.endswith("urgent"):
+        prof["priority"] = [] if set(prof.get("priority") or []) == {"high", "urgent"} else ["high", "urgent"]
+    elif callback.data.endswith("overdue"):
+        prof["is_overdue"] = None if prof.get("is_overdue") else True
+    elif callback.data.endswith("today"):
+        if prof.get("due_date_from") and prof.get("due_date_to"):
+            prof["due_date_from"] = None; prof["due_date_to"] = None
+        else:
+            from datetime import datetime, date
+            d = date.today()
+            prof["due_date_from"] = datetime(d.year, d.month, d.day, 0, 0, 0).isoformat()
+            prof["due_date_to"] = datetime(d.year, d.month, d.day, 23, 59, 59).isoformat()
+
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
-    await callback.answer("Режим: Архив" if prof["view"] == "archived" else "Режим: Активные")
+    await _render_list(callback, prof)
+    await callback.answer("Применено")
 
 
-# ---------- priorities ----------
-
-@router.callback_query(lambda c: c.data and c.data == "tl:prio")
+# Priorities
+@router.callback_query(lambda c: c.data and c.data == "tl:f:prio")
 async def tl_prio_open(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    await _safe_edit(callback, "Выберите приоритет(ы):", priorities_selector(prof))
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    await callback.message.edit_text("Приоритет:", reply_markup=priorities_selector(prof.get("priority") or []))
     await callback.answer()
 
 
-@router.callback_query(lambda c: c.data and c.data.startswith("tl:prio:toggle:"))
+@router.callback_query(lambda c: c.data and c.data.startswith("tl:f:prio:toggle:"))
 async def tl_prio_toggle(callback: CallbackQuery, state: FSMContext):
     key = callback.data.split(":")[-1]
-    data = await state.get_data()
-    prof = data.get("list_prof") or _default_profile()
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     cur = set(prof.get("priority") or [])
-    if key in cur:
-        cur.remove(key)
-    else:
-        cur.add(key)
+    if key in cur: cur.remove(key)
+    else: cur.add(key)
     prof["priority"] = sorted(cur)
     await state.update_data(list_prof=prof)
-    await _safe_edit(callback, "Выберите приоритет(ы):", priorities_selector(prof))
+    await callback.message.edit_text("Приоритет:", reply_markup=priorities_selector(prof["priority"]))
     await callback.answer()
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:prio:clear")
+@router.callback_query(lambda c: c.data and c.data == "tl:f:prio:clear")
 async def tl_prio_clear(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     prof["priority"] = []
     await state.update_data(list_prof=prof)
-    await _safe_edit(callback, "Выберите приоритет(ы):", priorities_selector(prof))
-    await callback.answer("Приоритеты очищены")
+    await callback.message.edit_text("Приоритет:", reply_markup=priorities_selector(prof["priority"]))
+    await callback.answer("Очищено")
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:prio:apply")
+@router.callback_query(lambda c: c.data and c.data == "tl:f:prio:apply")
 async def tl_prio_apply(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
+    await _render_list(callback, prof)
     await callback.answer("Применено")
 
 
-# ---------- statuses ----------
-
-@router.callback_query(lambda c: c.data and c.data == "tl:st")
+# Statuses
+@router.callback_query(lambda c: c.data and c.data == "tl:f:status")
 async def tl_st_open(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    await _safe_edit(callback, "Выберите статус(ы):", statuses_selector(prof))
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    await callback.message.edit_text("Статусы:", reply_markup=statuses_selector(prof.get("status") or []))
     await callback.answer()
 
 
-@router.callback_query(lambda c: c.data and c.data.startswith("tl:st:toggle:"))
+@router.callback_query(lambda c: c.data and c.data.startswith("tl:f:st:toggle:"))
 async def tl_st_toggle(callback: CallbackQuery, state: FSMContext):
     key = callback.data.split(":")[-1]
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     cur = set(prof.get("status") or [])
-    if key in cur:
-        cur.remove(key)
-    else:
-        cur.add(key)
+    if key in cur: cur.remove(key)
+    else: cur.add(key)
     prof["status"] = sorted(cur)
     await state.update_data(list_prof=prof)
-    await _safe_edit(callback, "Выберите статус(ы):", statuses_selector(prof))
+    await callback.message.edit_text("Статусы:", reply_markup=statuses_selector(prof["status"]))
     await callback.answer()
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:st:clear")
+@router.callback_query(lambda c: c.data and c.data == "tl:f:st:clear")
 async def tl_st_clear(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     prof["status"] = []
     await state.update_data(list_prof=prof)
-    await _safe_edit(callback, "Выберите статус(ы):", statuses_selector(prof))
-    await callback.answer("Статусы очищены")
+    await callback.message.edit_text("Статусы:", reply_markup=statuses_selector(prof["status"]))
+    await callback.answer("Очищено")
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:st:apply")
+@router.callback_query(lambda c: c.data and c.data == "tl:f:st:apply")
 async def tl_st_apply(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
+    await _render_list(callback, prof)
     await callback.answer("Применено")
 
 
-# ---------- sort ----------
+# Categories
+@router.callback_query(lambda c: c.data and c.data == "tl:f:cat")
+async def tl_cat_open(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    cats = await CategoriesAPI.list(callback.from_user.id)
+    await callback.message.edit_text("Категория:", reply_markup=categories_selector(cats, page=prof.get("cat_page", 0)))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("tl:f:cat:page:"))
+async def tl_cat_page(callback: CallbackQuery, state: FSMContext):
+    page = int(callback.data.split(":")[-1])
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    prof["cat_page"] = page
+    await state.update_data(list_prof=prof)
+    cats = await CategoriesAPI.list(callback.from_user.id)
+    await callback.message.edit_reply_markup(reply_markup=categories_selector(cats, page=page))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and (c.data.startswith("tl:f:cat:set:") or c.data == "tl:f:cat:none"))
+async def tl_cat_apply(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    if callback.data.endswith(":none"):
+        prof["category_id"] = None
+    else:
+        prof["category_id"] = int(callback.data.split(":")[-1])
+    prof["skip"] = 0
+    await state.update_data(list_prof=prof)
+    await _render_list(callback, prof)
+    await callback.answer("Применено")
+
+
+# Sort ------------------------------------------------------
 
 @router.callback_query(lambda c: c.data and c.data == "tl:sort")
 async def tl_sort_open(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    await _safe_edit(callback, "Выберите сортировку:", sort_selector(prof))
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    order = prof.get("sort_order", "asc")
+    arrow = "↑" if order == "asc" else "↓"
+    await callback.message.edit_text(
+        f"Сортировка:\n"
+        f"1) Дедлайн\n"
+        f"2) Приоритет\n"
+        f"3) Обновлено\n"
+        f"4) Название\n\n"
+        f"Текущая: {prof.get('sort_by', 'due_date')} {arrow}",
+        reply_markup=_sort_kb(),
+    )
     await callback.answer()
+
+
+def _sort_kb():
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Дедлайн", callback_data="tl:sort:set:due_date"),
+            InlineKeyboardButton(text="Приоритет", callback_data="tl:sort:set:priority"),
+        ],
+        [
+            InlineKeyboardButton(text="Обновлено", callback_data="tl:sort:set:updated_at"),
+            InlineKeyboardButton(text="Название", callback_data="tl:sort:set:title"),
+        ],
+        [
+            InlineKeyboardButton(text="↕️ Направление", callback_data="tl:sort:dir"),
+            InlineKeyboardButton(text="↩️ Назад", callback_data="tl:back"),
+        ]
+    ])
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("tl:sort:set:"))
 async def tl_sort_set(callback: CallbackQuery, state: FSMContext):
     key = callback.data.split(":")[-1]
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    prof["sort_by"] = key
-    prof["sort_order"] = "asc"
-    prof["skip"] = 0
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    prof["sort_by"] = key; prof["sort_order"] = "asc"; prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _safe_edit(callback, "Выберите сортировку:", sort_selector(prof))
-    await callback.answer()
+    await _render_list(callback, prof)
+    await callback.answer("Сортировка применена")
 
 
-@router.callback_query(lambda c: c.data and c.data == "tl:sort:toggle_dir")
-async def tl_sort_toggle_dir(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
+@router.callback_query(lambda c: c.data and c.data == "tl:sort:dir")
+async def tl_sort_dir(callback: CallbackQuery, state: FSMContext):
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
     prof["sort_order"] = "desc" if prof.get("sort_order") == "asc" else "asc"
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
-    await _safe_edit(callback, "Выберите сортировку:", sort_selector(prof))
-    await callback.answer()
+    await _render_list(callback, prof)
+    await callback.answer("Направление изменено")
 
 
-# ---------- categories ----------
-
-@router.callback_query(lambda c: c.data and c.data == "tl:cat")
-async def tl_cat_open(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    cats = await _fetch_categories(callback.from_user.id)
-    await _safe_edit(callback, "Выберите категорию:", categories_selector(cats, page=prof.get("cat_page", 0)))
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("tl:cat:page:"))
-async def tl_cat_page(callback: CallbackQuery, state: FSMContext):
-    page = int(callback.data.split(":")[-1])
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    prof["cat_page"] = page
-    await state.update_data(list_prof=prof)
-    cats = await _fetch_categories(callback.from_user.id)
-    await callback.message.edit_reply_markup(reply_markup=categories_selector(cats, page=page))
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data and (c.data == "tl:back" or c.data.startswith("tl:cat:set:") or c.data == "tl:cat:none"))
-async def tl_cat_set_or_back(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-
-    if callback.data == "tl:back":
-        await _reload_list(callback, prof)
-        await callback.answer()
-        return
-
-    if callback.data == "tl:cat:none":
-        prof["category_id"] = None
-    else:
-        category_id = int(callback.data.split(":")[-1])
-        prof["category_id"] = category_id
-
-    prof["skip"] = 0
-    await state.update_data(list_prof=prof)
-    await _reload_list(callback, prof)
-    await callback.answer("Категория применена" if prof["category_id"] else "Без категории")
-
-
-# ---------- search ----------
+# Search ----------------------------------------------------
 
 @router.callback_query(lambda c: c.data and c.data == "tl:search")
 async def tl_search_start(callback: CallbackQuery, state: FSMContext):
-    prof = (await state.get_data()).get("list_prof") or _default_profile()
-    await state.set_state(TasksListStates.search)
+    await state.set_state(ListStates.search)
     await callback.message.edit_text("Введите строку поиска (или «-» чтобы очистить):")
     await callback.answer()
 
 
-@router.message(TasksListStates.search)
+@router.message(ListStates.search)
 async def tl_search_apply(message: Message, state: FSMContext):
     text = (message.text or "").strip()
-    data = await state.get_data()
-    prof = data.get("list_prof") or _default_profile()
-
-    if text == "-":
-        prof["search"] = None
-    else:
-        prof["search"] = text
-
+    prof = (await state.get_data()).get("list_prof") or _default_prof()
+    prof["search"] = None if text == "-" else text
     prof["skip"] = 0
     await state.update_data(list_prof=prof)
     await state.clear()
-    await _reload_list(message, prof)
+    await _render_list(message, prof)
