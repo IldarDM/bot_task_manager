@@ -10,4 +10,10 @@ class CategoriesAPI:
             return []
         data = resp.json() or []
         items = data if isinstance(data, list) else []
-        return [c for c in items if str(c.get("name", "")).strip().lower() != "uncategorized"]
+        cleaned: List[Dict] = []
+        for item in items:
+            name = str(item.get("name", "")).strip().lower()
+            if name in {"uncategorized", "без категории"}:
+                continue
+            cleaned.append(item)
+        return cleaned

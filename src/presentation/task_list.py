@@ -6,6 +6,15 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 GROUPS = ("urgent", "overdue", "today", "done", "rest", "archived")
 
+GROUP_LABELS = {
+    "urgent": "🔥 Срочные",
+    "overdue": "⏰ Просрочено",
+    "today": "🎯 Сегодня",
+    "done": "✅ Выполненные",
+    "rest": "📄 Остальные",
+    "archived": "📦 Архив",
+}
+
 
 def _title_btn(task: Dict) -> InlineKeyboardButton:
     title = task.get("title") or "Без названия"
@@ -125,7 +134,7 @@ def build_list_keyboard(
         items = groups.get(key, [])
         if not items:
             return
-        rows.append([InlineKeyboardButton(text=title, callback_data="tl:noop")])
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"tl:grp:info:{key}")])
 
         start = int(offsets.get(key, 0))
         chunk = items[start : start + limit]
@@ -135,17 +144,8 @@ def build_list_keyboard(
         if start + limit < len(items):
             rows.append([InlineKeyboardButton(text="Ещё…", callback_data=f"tl:grp:{key}:more")])
 
-    section_titles = {
-        "urgent": "🔥 Срочные",
-        "overdue": "⏰ Просрочено",
-        "today": "🎯 Сегодня",
-        "done": "✅ Выполненные",
-        "rest": "Остальные",
-        "archived": "📦 Архив",
-    }
-
     for key in GROUPS:
-        title = section_titles.get(key)
+        title = GROUP_LABELS.get(key)
         if title:
             section(title, key)
 
@@ -162,6 +162,14 @@ def build_list_keyboard(
         ]
     )
 
+    rows.append(
+        [
+            InlineKeyboardButton(text="➕ Задача", callback_data="task:new"),
+            InlineKeyboardButton(text="➕ Категория", callback_data="cat:new"),
+            InlineKeyboardButton(text="🏠", callback_data="tl:home"),
+        ]
+    )
+
     nav_row: List[InlineKeyboardButton] = []
     if has_prev:
         nav_row.append(InlineKeyboardButton(text="⬅️", callback_data="tl:page:prev"))
@@ -171,3 +179,14 @@ def build_list_keyboard(
     rows.append(nav_row)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_group_summary(groups: Dict[str, List[Dict]]) -> str:
+    lines: List[str] = []
+    for key in GROUPS:
+        items = groups.get(key, [])
+        if not items:
+            continue
+        label = GROUP_LABELS.get(key, key.title())
+        lines.append(f"{label} — {len(items)}")
+    return "\n".join(lines)

@@ -9,6 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from src.database.redis_client import redis_client
+from src.keyboards.common import cancel_keyboard
 from src.keyboards.list_filters import (
     categories_selector,
     filters_menu,
@@ -16,14 +17,33 @@ from src.keyboards.list_filters import (
     sort_keyboard,
     statuses_selector,
 )
+from src.keyboards.main_menu import (
+    NEW_TASK_BUTTON,
+    REFRESH_BUTTON,
+    TASKS_BUTTON,
+    main_menu_keyboard,
+)
 from src.keyboards.task_actions import back_to_list_keyboard
+from src.keyboards.task_creation import (
+    creation_category_keyboard,
+    creation_due_keyboard,
+    creation_priority_keyboard,
+)
 from src.keyboards.task_editor import (
     task_edit_categories as task_edit_categories_keyboard,
     task_edit_menu as task_edit_menu_markup,
     task_edit_priority as task_edit_priority_keyboard,
 )
 from src.presentation.task_card import build_task_keyboard, build_task_text
-from src.presentation.task_list import GROUPS, build_header, build_list_keyboard, group_tasks
+from src.presentation.task_list import (
+    GROUPS,
+    GROUP_LABELS,
+    build_group_summary,
+    build_header,
+    build_list_keyboard,
+    group_tasks,
+)
+from src.routes.states import TaskStates
 from src.services.categories_api import CategoriesAPI
 from src.services.tasks_api import TasksAPI
 from src.utils.dates import parse_due
@@ -32,6 +52,23 @@ router = Router()
 
 DEFAULT_LIMIT = 10
 GROUP_LIMIT = 8
+
+PRIORITY_ALIASES = {
+    "1": "low",
+    "низкий": "low",
+    "низкий приоритет": "low",
+    "low": "low",
+    "2": "medium",
+    "средний": "medium",
+    "medium": "medium",
+    "3": "high",
+    "высокий": "high",
+    "high": "high",
+    "4": "urgent",
+    "срочный": "urgent",
+    "срочно": "urgent",
+    "urgent": "urgent",
+}
 
 
 @dataclass
@@ -153,11 +190,21 @@ async def _render_list(target: Message | CallbackQuery, profile: ListProfile) ->
     groups = group_tasks(tasks)
     profile_dict = asdict(profile)
     header = build_header(profile_dict, total, page, pages)
-    text = (
-        "🗂 <b>Мои задачи</b>\n"
-        f"{header}\n\n"
-        "Выберите задачу или откройте 🎛 фильтры."
-    )
+    summary = build_group_summary(groups)
+    if summary:
+        hint = "Выберите задачу или воспользуйтесь кнопками ниже."
+        text = (
+            "🗂 <b>Мои задачи</b>\n"
+            f"{header}\n\n"
+            f"{summary}\n\n"
+            f"{hint}"
+        )
+    else:
+        text = (
+            "🗂 <b>Мои задачи</b>\n"
+            f"{header}\n\n"
+            "Пока задач нет. Нажмите «➕ Задача», чтобы добавить первую."
+        )
     kb = build_list_keyboard(groups, profile_dict, has_prev, has_next)
     await _respond(target, text, kb)
 
@@ -190,6 +237,126 @@ async def _apply_patch(callback: CallbackQuery, task_id: int, payload: Dict[str,
     await callback.answer(error_text, show_alert=True)
 
 
+async def _start_task_creation(origin: Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(TaskStates.create_title)
+    prompt_target: Message
+    origin_info: Optional[Dict[str, int]] = None
+
+    if isinstance(origin, CallbackQuery):
+        prompt_target = origin.message
+        origin_info = {
+            "chat_id": origin.message.chat.id,
+            "message_id": origin.message.message_id,
+        }
+    else:
+        prompt_target = origin
+
+    await state.update_data(
+        task_create_origin=origin_info,
+        new_task={},
+    )
+    await prompt_target.answer(
+        "Введите название новой задачи:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def _send_step_message(target: Message | CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
+    if isinstance(target, CallbackQuery):
+        await target.message.answer(text, reply_markup=kb)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=kb)
+
+
+async def _prompt_priority_step(target: Message | CallbackQuery, state: FSMContext, selected: Optional[str] = None) -> None:
+    await state.set_state(TaskStates.create_priority)
+    await _send_step_message(
+        target,
+        "Выберите приоритет для новой задачи:",
+        creation_priority_keyboard(selected),
+    )
+
+
+async def _prompt_category_step(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    user_id: int,
+    page: int = 0,
+) -> None:
+    categories = await CategoriesAPI.list(user_id)
+    await state.update_data(create_categories=categories, create_category_page=page)
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    if not categories:
+        new_task["category_id"] = None
+        await state.update_data(new_task=new_task, create_categories=None)
+        await _prompt_due_step(target, state)
+        return
+
+    await state.update_data(new_task=new_task)
+    await state.set_state(TaskStates.create_category)
+    await _send_step_message(
+        target,
+        "Выберите категорию для задачи (или нажмите «Без категории»):",
+        creation_category_keyboard(categories, page=page),
+    )
+
+
+async def _prompt_due_step(target: Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(TaskStates.create_due_date)
+    await _send_step_message(
+        target,
+        "Выберите дедлайн или укажите дату вручную:",
+        creation_due_keyboard(),
+    )
+
+
+async def _finalize_task_creation(source: Message | CallbackQuery, state: FSMContext, user_id: int) -> None:
+    data = await state.get_data()
+    new_task = data.get("new_task") or {}
+
+    payload = {
+        key: value
+        for key, value in {
+            "title": new_task.get("title"),
+            "description": new_task.get("description"),
+            "priority": new_task.get("priority"),
+            "category_id": new_task.get("category_id"),
+            "due_date": new_task.get("due_date"),
+        }.items()
+        if value not in (None, "")
+    }
+
+    resp = await TasksAPI.create(user_id, payload)
+
+    await state.update_data(new_task=None, create_categories=None, create_category_page=0)
+    await state.set_state(None)
+
+    if resp.status_code not in (200, 201):
+        if isinstance(source, CallbackQuery):
+            await source.message.answer(
+                "❌ Не удалось создать задачу. Попробуйте позже.",
+                reply_markup=main_menu_keyboard(),
+            )
+            await source.answer("Ошибка создания", show_alert=True)
+        else:
+            await source.answer(
+                "❌ Не удалось создать задачу. Попробуйте позже.",
+                reply_markup=main_menu_keyboard(),
+            )
+        return
+
+    if isinstance(source, CallbackQuery):
+        await source.message.answer("✅ Задача создана!", reply_markup=main_menu_keyboard())
+        await tasks_entry(source.message, state)
+        await source.answer("Готово")
+    else:
+        await source.answer("✅ Задача создана!", reply_markup=main_menu_keyboard())
+        await tasks_entry(source, state)
+
+
 @router.message(Command("tasks"))
 async def tasks_entry(message: Message, state: FSMContext) -> None:
     if not await _ensure_authenticated(message):
@@ -198,6 +365,23 @@ async def tasks_entry(message: Message, state: FSMContext) -> None:
     profile.reset_paging()
     await _store_profile(state, profile)
     await _render_list(message, profile)
+
+
+@router.message(F.text == TASKS_BUTTON)
+async def tasks_from_menu(message: Message, state: FSMContext) -> None:
+    await tasks_entry(message, state)
+
+
+@router.message(F.text == REFRESH_BUTTON)
+async def tasks_refresh_button(message: Message, state: FSMContext) -> None:
+    await tasks_entry(message, state)
+
+
+@router.message(F.text == NEW_TASK_BUTTON)
+async def task_new_from_menu(message: Message, state: FSMContext) -> None:
+    if not await _ensure_authenticated(message):
+        return
+    await _start_task_creation(message, state)
 
 
 @router.callback_query(F.data == "tl:refresh")
@@ -226,6 +410,75 @@ async def tl_group_more(callback: CallbackQuery, state: FSMContext) -> None:
     await _store_profile(state, profile)
     await _render_list(callback, profile)
     await callback.answer("Ещё…")
+
+
+@router.callback_query(F.data.startswith("tl:grp:info:"))
+async def tl_group_quick_filter(callback: CallbackQuery, state: FSMContext) -> None:
+    key = callback.data.split(":")[-1]
+    profile = await _load_profile(state)
+    changed = False
+
+    if key == "urgent":
+        profile.view = "active"
+        profile.status = ["todo", "in_progress"]
+        profile.priority = ["high", "urgent"]
+        profile.is_overdue = None
+        profile.due_date_from = profile.due_date_to = None
+        profile.sort_by, profile.sort_order = "due_date", "asc"
+        changed = True
+    elif key == "overdue":
+        profile.view = "active"
+        profile.status = ["todo", "in_progress"]
+        profile.priority = []
+        profile.is_overdue = True
+        profile.due_date_from = profile.due_date_to = None
+        profile.sort_by, profile.sort_order = "due_date", "asc"
+        changed = True
+    elif key == "today":
+        from datetime import datetime, date
+
+        today = date.today()
+        start = datetime(today.year, today.month, today.day, 0, 0, 0).isoformat()
+        end = datetime(today.year, today.month, today.day, 23, 59, 59).isoformat()
+        profile.view = "active"
+        profile.status = ["todo", "in_progress"]
+        profile.priority = []
+        profile.is_overdue = None
+        profile.due_date_from, profile.due_date_to = start, end
+        profile.sort_by, profile.sort_order = "due_date", "asc"
+        changed = True
+    elif key == "done":
+        profile.view = "active"
+        profile.status = ["done"]
+        profile.priority = []
+        profile.is_overdue = None
+        profile.due_date_from = profile.due_date_to = None
+        profile.sort_by, profile.sort_order = "updated_at", "desc"
+        changed = True
+    elif key == "archived":
+        profile.view = "archived"
+        profile.status = []
+        profile.priority = []
+        profile.is_overdue = None
+        profile.due_date_from = profile.due_date_to = None
+        profile.sort_by, profile.sort_order = "updated_at", "desc"
+        changed = True
+    elif key == "rest":
+        profile.view = "active"
+        profile.status = ["todo", "in_progress"]
+        profile.priority = []
+        profile.is_overdue = None
+        profile.due_date_from = profile.due_date_to = None
+        profile.sort_by, profile.sort_order = "due_date", "asc"
+        changed = True
+
+    if changed:
+        profile.reset_paging()
+        await _store_profile(state, profile)
+        await _render_list(callback, profile)
+        await callback.answer(f"Фильтр «{GROUP_LABELS.get(key, key)}» активирован")
+    else:
+        await callback.answer("Здесь пока нечего переключать")
 
 
 @router.callback_query(F.data == "tl:back_to_list")
@@ -275,6 +528,21 @@ async def tl_filters_reset(callback: CallbackQuery, state: FSMContext) -> None:
     await _store_profile(state, profile)
     await _render_list(callback, profile)
     await callback.answer("Фильтры сброшены")
+
+
+@router.callback_query(F.data == "tl:home")
+async def tl_home(callback: CallbackQuery) -> None:
+    await callback.message.answer("🏠 Главное меню доступно снизу.", reply_markup=main_menu_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "task:new")
+async def task_new_inline(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await redis_client.is_authenticated(callback.from_user.id):
+        await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
+        return
+    await _start_task_creation(callback, state)
+    await callback.answer()
 
 
 @router.callback_query(F.data.in_({"tl:f:urgent", "tl:f:overdue", "tl:f:today"}))
@@ -611,6 +879,253 @@ async def task_edit_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(prompt)
     await callback.answer()
 
+
+@router.message(TaskStates.create_title)
+async def task_create_title(message: Message, state: FSMContext) -> None:
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Название не может быть пустым. Введите название задачи:", reply_markup=cancel_keyboard())
+        return
+
+    if not await _ensure_authenticated(message):
+        await state.set_state(None)
+        return
+
+    if not await redis_client.is_authenticated(message.from_user.id):
+        await state.set_state(None)
+        await message.answer("⚠️ Сначала войдите через /login.", reply_markup=main_menu_keyboard())
+        return
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["title"] = title
+    await state.update_data(new_task=new_task, create_categories=None)
+
+    await state.set_state(TaskStates.create_description)
+    await message.answer(
+        "Введите описание задачи (или «-», чтобы пропустить):",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(TaskStates.create_description)
+async def task_create_description(message: Message, state: FSMContext) -> None:
+    if not await _ensure_authenticated(message):
+        await state.set_state(None)
+        return
+
+    text = (message.text or "").strip()
+    description = None if text in {"", "-"} else text
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["description"] = description
+    await state.update_data(new_task=new_task)
+
+    await _prompt_priority_step(message, state)
+
+
+@router.message(TaskStates.create_priority)
+async def task_create_priority(message: Message, state: FSMContext) -> None:
+    if not await _ensure_authenticated(message):
+        await state.set_state(None)
+        return
+
+    raw = (message.text or "").strip().lower()
+    priority: Optional[str]
+    if raw in {"", "-"}:
+        priority = None
+    else:
+        priority = PRIORITY_ALIASES.get(raw)
+        if priority is None:
+            await message.answer(
+                "Не понял приоритет. Введите 1-4 или low/medium/high/urgent (можно по-русски).",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["priority"] = priority
+    await state.update_data(new_task=new_task)
+
+    await _prompt_category_step(message, state, message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("task:create:prio:"))
+async def task_create_priority_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    value = callback.data.split(":")[-1]
+    if not await redis_client.is_authenticated(callback.from_user.id):
+        await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
+        return
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["priority"] = None if value == "skip" else value
+    await state.update_data(new_task=new_task)
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _prompt_category_step(callback, state, callback.from_user.id)
+
+
+@router.message(TaskStates.create_category)
+async def task_create_category(message: Message, state: FSMContext) -> None:
+    if not await _ensure_authenticated(message):
+        await state.set_state(None)
+        return
+
+    data = await state.get_data()
+    categories: List[Dict] = data.get("create_categories") or []
+    if not categories:
+        categories = await CategoriesAPI.list(message.from_user.id)
+        await state.update_data(create_categories=categories)
+
+    mapping: Dict[str, Dict] = {
+        str(idx + 1): cat for idx, cat in enumerate(categories)
+    }
+
+    new_task = data.get("new_task", {})
+    raw = (message.text or "").strip().lower()
+    if raw in {"", "-", "0", "без", "none"}:
+        new_task["category_id"] = None
+    elif raw in mapping:
+        cat_id_value = mapping[raw].get("id")
+        try:
+            cat_id_value = int(cat_id_value)
+        except (TypeError, ValueError):
+            pass
+        new_task["category_id"] = cat_id_value
+    else:
+        await message.answer(
+            "Не удалось распознать категорию. Используйте кнопки или отправьте номер из списка:",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    await state.update_data(new_task=new_task)
+    await _prompt_due_step(message, state)
+
+
+@router.callback_query(F.data.startswith("task:create:cat:page:"))
+async def task_create_category_page(callback: CallbackQuery, state: FSMContext) -> None:
+    page = int(callback.data.split(":")[-1])
+    data = await state.get_data()
+    categories: List[Dict] = data.get("create_categories") or []
+    if not categories:
+        categories = await CategoriesAPI.list(callback.from_user.id)
+        await state.update_data(create_categories=categories)
+
+    kb = creation_category_keyboard(categories, page=page)
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await state.update_data(create_category_page=page)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("task:create:cat:set:"))
+async def task_create_category_select(callback: CallbackQuery, state: FSMContext) -> None:
+    cat_id_raw = callback.data.split(":")[-1]
+    if not await redis_client.is_authenticated(callback.from_user.id):
+        await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
+        return
+
+    try:
+        cat_id = int(cat_id_raw)
+    except ValueError:
+        cat_id = cat_id_raw
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["category_id"] = cat_id
+    await state.update_data(new_task=new_task, create_categories=None)
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _prompt_due_step(callback, state)
+
+
+@router.callback_query(F.data == "task:create:cat:none")
+async def task_create_category_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await redis_client.is_authenticated(callback.from_user.id):
+        await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
+        return
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["category_id"] = None
+    await state.update_data(new_task=new_task, create_categories=None)
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _prompt_due_step(callback, state)
+
+
+@router.message(TaskStates.create_due_date)
+async def task_create_due_date(message: Message, state: FSMContext) -> None:
+    if not await _ensure_authenticated(message):
+        await state.set_state(None)
+        return
+
+    text = (message.text or "").strip()
+    due: Optional[str]
+    if text in {"", "-"}:
+        due = None
+    else:
+        due = parse_due(text)
+        if due is None:
+            await message.answer(
+                "Не похоже на дату. Примеры: «сегодня», «завтра», «+3», 15-10-2025, 15.10.2025, 2025-10-15 или «-».",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+    new_task["due_date"] = due
+    await state.update_data(new_task=new_task)
+
+    await _finalize_task_creation(message, state, message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("task:create:due:"))
+async def task_create_due_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    action = callback.data.split(":")[-1]
+    if not await redis_client.is_authenticated(callback.from_user.id):
+        await callback.answer("⚠️ Сначала войдите через /login", show_alert=True)
+        return
+
+    data = await state.get_data()
+    new_task = data.get("new_task", {})
+
+    if action == "manual":
+        await state.set_state(TaskStates.create_due_date)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(
+            "Введите дату вручную (YYYY-MM-DD, DD.MM.YYYY, сегодня/завтра/+3) или «-», чтобы пропустить:",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    if action == "skip":
+        new_task["due_date"] = None
+    else:
+        mapping = {
+            "today": "сегодня",
+            "tomorrow": "завтра",
+            "+3": "+3",
+            "+7": "+7",
+        }
+        due_text = mapping.get(action)
+        if due_text is None:
+            await callback.answer("Неизвестный вариант", show_alert=True)
+            return
+        due_iso = parse_due(due_text)
+        if due_iso is None:
+            await callback.answer("Не удалось распознать дату", show_alert=True)
+            return
+        new_task["due_date"] = due_iso
+
+    await state.update_data(new_task=new_task)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _finalize_task_creation(callback, state, callback.from_user.id)
 
 @router.message(EditStates.waiting_value)
 async def task_edit_apply(message: Message, state: FSMContext) -> None:
