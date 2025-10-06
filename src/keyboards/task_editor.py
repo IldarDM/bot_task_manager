@@ -39,7 +39,16 @@ def task_edit_priority(task_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def task_edit_categories(task_id: int, categories: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+def task_edit_categories(
+    task_id: int,
+    categories: List[Dict[str, Any]],
+    *,
+    page: int = 0,
+    page_size: int = 8,
+) -> InlineKeyboardMarkup:
+    start = page * page_size
+    chunk = categories[start : start + page_size]
+
     rows: List[List[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
@@ -47,8 +56,16 @@ def task_edit_categories(task_id: int, categories: List[Dict[str, Any]]) -> Inli
                 callback_data=f"task:edit:cat:set:{task_id}:{category.get('id')}",
             )
         ]
-        for category in categories
+        for category in chunk
     ]
+
+    nav: List[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Пред", callback_data=f"task:edit:cat:page:{task_id}:{page - 1}"))
+    if start + page_size < len(categories):
+        nav.append(InlineKeyboardButton(text="➡️ След", callback_data=f"task:edit:cat:page:{task_id}:{page + 1}"))
+    if nav:
+        rows.append(nav)
 
     rows.append([InlineKeyboardButton(text="Без категории", callback_data=f"task:edit:cat:set:{task_id}:none")])
     rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=f"task:edit:menu:{task_id}")])

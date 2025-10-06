@@ -563,10 +563,24 @@ async def task_edit_cat_menu(callback: CallbackQuery) -> None:
     if not cats:
         await callback.message.edit_text(
             "Категорий пока нет.",
-            reply_markup=task_edit_categories_keyboard(task_id, []),
+            reply_markup=task_edit_categories_keyboard(task_id, [], page=0),
         )
     else:
-        await callback.message.edit_text("Выберите категорию:", reply_markup=task_edit_categories_keyboard(task_id, cats))
+        await callback.message.edit_text(
+            "Выберите категорию:",
+            reply_markup=task_edit_categories_keyboard(task_id, cats, page=0),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("task:edit:cat:page:"))
+async def task_edit_cat_page(callback: CallbackQuery) -> None:
+    _, _, _, _, task_id_raw, page_raw = callback.data.split(":")
+    task_id = int(task_id_raw)
+    page = int(page_raw)
+    cats = await CategoriesAPI.list(callback.from_user.id)
+    kb = task_edit_categories_keyboard(task_id, cats, page=page)
+    await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
 
