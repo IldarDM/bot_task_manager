@@ -102,10 +102,14 @@ async def _load_profile(state: FSMContext) -> ListProfile:
     data = await state.get_data()
     raw = data.get("list_prof")
     if isinstance(raw, ListProfile):
-        return raw
-    if raw:
-        return ListProfile(**raw)
-    return ListProfile()
+        profile = raw
+    elif raw:
+        profile = ListProfile(**raw)
+    else:
+        profile = ListProfile()
+
+    profile.grp_offsets = {key: profile.grp_offsets.get(key, 0) for key in GROUPS}
+    return profile
 
 
 async def _store_profile(state: FSMContext, profile: ListProfile) -> None:

@@ -4,7 +4,7 @@ from typing import Dict, List
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-GROUPS = ("urgent", "overdue", "today", "rest")
+GROUPS = ("urgent", "overdue", "today", "done", "rest", "archived")
 
 
 def _title_btn(task: Dict) -> InlineKeyboardButton:
@@ -25,32 +25,34 @@ def _as_date(raw: str | None) -> date | None:
 
 def group_tasks(tasks: List[Dict]) -> Dict[str, List[Dict]]:
     today = date.today()
-    urgent, overdue, due_today, rest = [], [], [], []
+    groups: Dict[str, List[Dict]] = {name: [] for name in GROUPS}
 
     for task in tasks:
-        priority = (task.get("priority") or "").lower()
-        due = _as_date(task.get("due_date"))
         status = (task.get("status") or "").lower()
-
         if status == "archived":
-            rest.append(task)
+            groups["archived"].append(task)
+            continue
+        if status == "done":
+            groups["done"].append(task)
             continue
 
+        priority = (task.get("priority") or "").lower()
         if priority in {"urgent", "high"}:
-            urgent.append(task)
+            groups["urgent"].append(task)
             continue
 
+        due = _as_date(task.get("due_date"))
         if due:
             if due < today:
-                overdue.append(task)
+                groups["overdue"].append(task)
                 continue
             if due == today:
-                due_today.append(task)
+                groups["today"].append(task)
                 continue
 
-        rest.append(task)
+        groups["rest"].append(task)
 
-    return {"urgent": urgent, "overdue": overdue, "today": due_today, "rest": rest}
+    return groups
 
 
 def filters_active(profile: Dict) -> bool:
@@ -133,10 +135,19 @@ def build_list_keyboard(
         if start + limit < len(items):
             rows.append([InlineKeyboardButton(text="Ещё…", callback_data=f"tl:grp:{key}:more")])
 
-    section("🔥 Срочные", "urgent")
-    section("⏰ Просрочено", "overdue")
-    section("🎯 Сегодня", "today")
-    section("Остальные", "rest")
+    section_titles = {
+        "urgent": "🔥 Срочные",
+        "overdue": "⏰ Просрочено",
+        "today": "🎯 Сегодня",
+        "done": "✅ Выполненные",
+        "rest": "Остальные",
+        "archived": "📦 Архив",
+    }
+
+    for key in GROUPS:
+        title = section_titles.get(key)
+        if title:
+            section(title, key)
 
     filters_icon = "🎛*" if filters_active(profile) else "🎛"
     search_icon = "🔎*" if profile.get("search") else "🔎"
